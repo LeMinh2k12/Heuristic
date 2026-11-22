@@ -129,7 +129,9 @@ inline int freeChoices(int s, int g, Pair *a) {
     return n;
 }
 
-bool runBeam(int width) {
+bool runBeam(int width, bool adaptive = false) {
+    const int requested_width = width;
+    double seconds_per_node = 0.0;
     for (int i=0;i<=M;++i) layers[i].clear();
     Node root{}; for (int j=0;j<KMAX;++j) root.circles[j]=UNUSED;
     layers[0].push_back(root);
@@ -142,7 +144,19 @@ bool runBeam(int width) {
     memset(all_stamp, 0, sizeof(all_stamp));
     uint32_t generation=0;
     for (int d=0; d<M; ++d) {
-        if (elapsed() >= TIME_LIMIT) return false;
+        double t = elapsed();
+        if (t >= TIME_LIMIT) return false;
+        if (adaptive && d>=8 && seconds_per_node>0) {
+            // Budget future layers using an EMA of the time per source node.
+            // Narrowing the current layer preserves its rank order and makes
+            // it more likely that this search finishes before the deadline.
+            double remaining=max(0.0,TIME_LIMIT-0.04-t);
+            double target=remaining / ((M-d)*seconds_per_node*1.35);
+            width = target>=requested_width ? requested_width
+                  : target<=1.0 ? 1 : (int)target;
+            if ((int)layers[d].size()>width) layers[d].resize(width);
+        }
+        const int source_count=(int)layers[d].size();
         cand.clear();
         const int sx=gx[d], sy=gy[d], tx=gx[d+1], ty=gy[d+1];
         const int walk=md(sx,sy,tx,ty);
@@ -195,7 +209,7 @@ bool runBeam(int width) {
                     int c2=base.circles[k];
                     if (k==j || c2==UNUSED || (k && k-1!=j && c2==base.circles[k-1])) continue;
                     int cx2=coord_x[c2], cy2=coord_y[c2];
-                    if (first + axisCost(qx,tx,cx2) + axisCost(qy,ty,cy2) > walk+5) continue;
+                    if (2 + two_x[d][cx1*128+cx2] + two_y[d][cy1*128+cy2] > walk+5) continue;
                     int xs[4],ys[4];
                     int xn=choices(qx,tx,cx2,nx,xs), yn=choices(qy,ty,cy2,ny,ys);
                     for (int a=0;a<xn;++a) for (int b=0;b<yn;++b) {
@@ -277,12 +291,21 @@ bool runBeam(int width) {
         sort(cand.begin(),cand.end(),better);
         ++generation;
         auto &next=layers[d+1]; next.reserve(width);
-        for (const auto &c : cand) {
-            uint64_t k=key(c.node); unsigned h=(unsigned)hash64(k)&((1<<16)-1);
-            while (stamp[h]==generation && table[h]!=k) h=(h+1)&((1<<16)-1);
-            if (stamp[h]==generation) continue;
-            stamp[h]=generation; table[h]=k; next.push_back(c.node);
-            if ((int)next.size()==width) break;
+        if (deduplicated) {
+            for (const auto &c : cand) next.push_back(c.node);
+        } else {
+            for (const auto &c : cand) {
+                uint64_t k=key(c.node); unsigned h=(unsigned)hash64(k)&((1<<16)-1);
+                while (stamp[h]==generation && table[h]!=k) h=(h+1)&((1<<16)-1);
+                if (stamp[h]==generation) continue;
+                stamp[h]=generation; table[h]=k; next.push_back(c.node);
+                if ((int)next.size()==width) break;
+            }
+        }
+        if (adaptive && source_count>=128) {
+            double rate=(elapsed()-t)/source_count;
+            if (seconds_per_node==0.0) seconds_per_node=rate;
+            else seconds_per_node=0.85*seconds_per_node+0.15*rate;
         }
     }
     int at=-1, cost=best_cost;
@@ -320,7 +343,7 @@ int main() {
     }
     direct_moves = true;
     for (int width : {2048, 5120, 8192}) {
-        if (elapsed() >= TIME_LIMIT || !runBeam(width)) break;
+        if (elapsed() >= TIME_LIMIT || !runBeam(width, width>=5120)) break;
     }
     // Safe fallback: walking only. Also ensures operation count never exceeds T.
     if (best_cost > T || best_path.size() != (size_t)M) best_path.clear();
