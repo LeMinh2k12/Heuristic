@@ -316,11 +316,71 @@ bool runBeam(int width, bool adaptive = false) {
     for (int d=M;d>0;--d) { best_path[d-1]=layers[d][at]; at=layers[d][at].parent; }
     return true;
 }
+struct Operation { uint16_t center; char type; };
+vector<Operation> operations;
 inline void walkTo(int &x,int &y,int a,int b) {
-    while (x>a) { FastIO::pc('U'); FastIO::pc('\n'); --x; }
-    while (x<a) { FastIO::pc('D'); FastIO::pc('\n'); ++x; }
-    while (y>b) { FastIO::pc('L'); FastIO::pc('\n'); --y; }
-    while (y<b) { FastIO::pc('R'); FastIO::pc('\n'); ++y; }
+    while (x>a) { operations.push_back({0,'U'}); --x; }
+    while (x<a) { operations.push_back({0,'D'}); ++x; }
+    while (y>b) { operations.push_back({0,'L'}); --y; }
+    while (y<b) { operations.push_back({0,'R'}); ++y; }
+}
+
+// Reroute walking-only blocks through the same visited goals and the same
+// endpoint. Circle state at every teleport is unchanged. Extra goals reached
+// along the new path allow already-visited waypoints to be skipped.
+void outputOperations() {
+    int ox=gx[0], oy=gy[0], original_visited=0;
+    int x=ox, y=oy, visited=0;
+    auto advance=[&](int a,int b,int &v) {
+        if (v<M && a==gx[v+1] && b==gy[v+1]) ++v;
+    };
+    auto simulate=[&](int a,int b,int target_x,int target_y,int v,bool row_first) {
+        for (int phase=0;phase<2;++phase) {
+            bool row=(phase==0)==row_first;
+            if (row) while (a!=target_x) { a+=a<target_x?1:-1; advance(a,b,v); }
+            else while (b!=target_y) { b+=b<target_y?1:-1; advance(a,b,v); }
+        }
+        return v;
+    };
+    auto emit_walk=[&](int a,int b) {
+        int row_score=simulate(x,y,a,b,visited,true);
+        int col_score=simulate(x,y,a,b,visited,false);
+        bool row_first=row_score>=col_score;
+        for (int phase=0;phase<2 && visited<M;++phase) {
+            bool row=(phase==0)==row_first;
+            if (row) while (x!=a && visited<M) {
+                char c=x<a?'D':'U'; x+=x<a?1:-1;
+                FastIO::pc(c); FastIO::pc('\n'); advance(x,y,visited);
+            } else while (y!=b && visited<M) {
+                char c=y<b?'R':'L'; y+=y<b?1:-1;
+                FastIO::pc(c); FastIO::pc('\n'); advance(x,y,visited);
+            }
+        }
+    };
+    size_t at=0;
+    while (at<operations.size() && visited<M) {
+        if (operations[at].type=='J') {
+            int c=operations[at++].center, cx=c/N, cy=c%N;
+            FastIO::pc('J'); FastIO::pc(' '); FastIO::writeInt(cx);
+            FastIO::pc(' '); FastIO::writeInt(cy); FastIO::pc('\n');
+            ox=2*cx-ox; oy=2*cy-oy; advance(ox,oy,original_visited);
+            x=2*cx-x; y=2*cy-y; advance(x,y,visited);
+            continue;
+        }
+        int goals[MAXM], count=0;
+        while (at<operations.size() && operations[at].type!='J') {
+            char c=operations[at++].type;
+            if (c=='U') --ox; else if (c=='D') ++ox;
+            else if (c=='L') --oy; else ++oy;
+            int before=original_visited; advance(ox,oy,original_visited);
+            if (original_visited>before) goals[count++]=before;
+        }
+        for (int i=0;i<count && visited<M;++i) {
+            int g=goals[i];
+            if (visited<=g) emit_walk(gx[g+1],gy[g+1]);
+        }
+        if (visited<M) emit_walk(ox,oy);
+    }
 }
 int main() {
     using namespace FastIO;
@@ -343,7 +403,9 @@ int main() {
     }
     direct_moves = true;
     for (int width : {2048, 5120, 8192}) {
-        if (elapsed() >= TIME_LIMIT || !runBeam(width, width>=5120)) break;
+        // Preserve the fixed-width search that produced the best known score.
+        // Only the final, widest attempt is narrowed as the deadline nears.
+        if (elapsed() >= TIME_LIMIT || !runBeam(width, width>=8192)) break;
     }
     // Safe fallback: walking only. Also ensures operation count never exceeds T.
     if (best_cost > T || best_path.size() != (size_t)M) best_path.clear();
@@ -358,16 +420,18 @@ int main() {
             const Node &z=best_path[d];
             walkTo(x,y,z.dep/N,z.dep%N);
             int cx=z.center/N, cy=z.center%N;
-            pc('J'); pc(' '); writeInt(cx); pc(' '); writeInt(cy); pc('\n');
+            operations.push_back({z.center,'J'});
             x=2*cx-x; y=2*cy-y;
             if (z.center2!=UNUSED) {
                 walkTo(x,y,z.dep2/N,z.dep2%N);
                 cx=z.center2/N; cy=z.center2%N;
-                pc('J'); pc(' '); writeInt(cx); pc(' '); writeInt(cy); pc('\n');
+                operations.push_back({z.center2,'J'});
                 x=2*cx-x; y=2*cy-y;
             }
         }
         walkTo(x,y,gx[d+1],gy[d+1]);
     }
+    outputOperations();
     flush();
+    return 0;
 }
